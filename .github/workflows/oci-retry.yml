@@ -2,7 +2,7 @@ name: OCI ARM Instance Retry
 
 on:
   schedule:
-    - cron: '2,12,22,32,42,52 * * * *'
+    - cron: '7,17,27,37,47,57 * * * *'
 
 permissions: {}
 
