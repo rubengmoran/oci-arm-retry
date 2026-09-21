@@ -35,7 +35,7 @@ jobs:
             compute instance list
             --compartment-id "${{ secrets.OCI_COMPARTMENT_OCID }}"
             --display-name "n8n-arm-instance"
-          query: 'data[?"lifecycle-state"!=`TERMINATED`].id'
+          query: 'data[?\"lifecycle-state\"!=`TERMINATED`].id'
 
       - name: Instance already exists
         if: steps.check.outputs.raw_output != '[]'
