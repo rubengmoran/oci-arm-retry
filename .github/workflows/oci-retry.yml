@@ -54,6 +54,7 @@ jobs:
         if: steps.check.outputs.raw_output == '[]'
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         with:
+          silent: false
           command: >-
             compute instance launch
             --compartment-id "${{ secrets.OCI_COMPARTMENT_OCID }}"
