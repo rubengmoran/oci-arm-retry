@@ -2,8 +2,8 @@ name: OCI ARM Instance Retry
 
 on:
   schedule:
-    # Cada 10 minutos. GitHub advierte de posibles retrasos bajo carga.
-   - cron: '2,12,22,32,42,52 * * * *'
+    - cron: '2,12,22,32,42,52 * * * *'
+
 permissions: {}
 
 concurrency:
