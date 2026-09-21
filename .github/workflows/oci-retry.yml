@@ -1,0 +1,81 @@
+name: OCI ARM Instance Retry
+
+on:
+  schedule:
+    # Frecuencia programada cada 10 minutos.
+    # GitHub advierte que los schedule pueden sufrir retrasos bajo carga.
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: oci-arm-instance-retry
+  cancel-in-progress: false
+
+jobs:
+  retry:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
+      OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
+      OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+      OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
+      OCI_CLI_REGION: ${{ secrets.OCI_REGION }}
+
+    steps:
+      - name: Check if instance already exists
+        id: check
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        with:
+          command: >-
+            compute instance list
+            --compartment-id "${{ secrets.OCI_COMPARTMENT_OCID }}"
+            --display-name "n8n-arm-instance"
+          query: 'data[?"lifecycle-state"!=`TERMINATED`].id'
+
+      - name: Instance already exists
+        if: steps.check.outputs.raw_output != '[]'
+        run: |
+          echo "Instance 'n8n-arm-instance' already exists. Nothing to do."
+
+      - name: Create SSH key file
+        if: steps.check.outputs.raw_output == '[]'
+        env:
+          SSH_PUBLIC_KEY: ${{ secrets.INSTANCE_SSH_PUBLIC_KEY }}
+        run: |
+          printf '%s\n' "$SSH_PUBLIC_KEY" > /tmp/authorized_keys
+          chmod 600 /tmp/authorized_keys
+
+      - name: Attempt to create instance
+        id: create
+        if: steps.check.outputs.raw_output == '[]'
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        with:
+          command: >-
+            compute instance launch
+            --compartment-id "${{ secrets.OCI_COMPARTMENT_OCID }}"
+            --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}"
+            --shape "VM.Standard.A1.Flex"
+            --shape-config '{"ocpus":2,"memoryInGBs":12}'
+            --image-id "${{ secrets.OCI_IMAGE_ID }}"
+            --subnet-id "${{ secrets.OCI_SUBNET_ID }}"
+            --display-name "n8n-arm-instance"
+            --assign-public-ip true
+            --ssh-authorized-keys-file "/tmp/authorized_keys"
+            --boot-volume-size-in-gbs 100
+            --wait-for-state RUNNING
+            --max-wait-seconds 600
+
+      - name: Creation failed
+        if: failure() && steps.check.outputs.raw_output == '[]'
+        run: |
+          echo "Instance creation failed."
+          echo "The next scheduled run will retry."
+          echo ""
+          echo "Interpretación de errores comunes:"
+          echo "  - 'Out of host capacity'    → Comportamiento esperado. Se reintentará automáticamente."
+          echo "  - 'NotAuthorizedOrNotFound' → Error de configuración (revisa OCIDs y políticas IAM)."
+          echo "  - 'InvalidParameter'        → Error de configuración (revisa shape, image o subnet)."
