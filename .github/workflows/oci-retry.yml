@@ -50,13 +50,21 @@ jobs:
       - name: Check if instance already exists
         id: check
         run: |
-          COUNT=$(oci compute instance list \
+          RESULT=$(oci compute instance list \
             --compartment-id "${{ secrets.OCI_COMPARTMENT_OCID }}" \
             --display-name "n8n-arm-instance" \
-            --query 'length(data[?"lifecycle-state"!=`TERMINATED`])' \
-            --raw-output)
-          echo "Instancias encontradas: $COUNT"
-          echo "count=$COUNT" >> $GITHUB_OUTPUT
+            --query 'data[?"lifecycle-state"!=`TERMINATED`].id' \
+            --all)
+      
+          echo "Resultado de búsqueda: [$RESULT]"
+      
+          if [[ -z "$RESULT" || "$RESULT" == "[]" ]]; then
+            echo "No existe ninguna instancia 'n8n-arm-instance'."
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Existe al menos una instancia 'n8n-arm-instance'."
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Instance already exists
         if: steps.check.outputs.count != '0'
