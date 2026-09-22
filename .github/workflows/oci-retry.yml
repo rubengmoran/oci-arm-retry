@@ -28,7 +28,6 @@ jobs:
           OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
         run: |
           mkdir -p ~/.oci
-          # tr -d '\r' elimina posibles retornos de carro (CRLF) si el secreto se copió desde Windows
           printf '%s\n' "$OCI_PRIVATE_KEY" | tr -d '\r' > ~/.oci/oci_api_key.pem
           chmod 600 ~/.oci/oci_api_key.pem
           cat > ~/.oci/config <<EOF
@@ -44,7 +43,8 @@ jobs:
       - name: Verify OCI CLI configuration
         run: |
           echo "Verificando autenticación con OCI..."
-          oci iam region list --output table
+          oci iam region list --output table > /dev/null
+          echo "✅ Autenticación correcta."
 
       - name: Check if instance already exists
         id: check
@@ -54,9 +54,9 @@ jobs:
             --display-name "n8n-arm-instance" \
             --query 'data[?"lifecycle-state"!=`TERMINATED`].id' \
             --all)
-      
+
           echo "Resultado de búsqueda: [$RESULT]"
-      
+
           if [[ -z "$RESULT" || "$RESULT" == "[]" ]]; then
             echo "No existe ninguna instancia 'n8n-arm-instance'."
             echo "exists=false" >> "$GITHUB_OUTPUT"
@@ -66,12 +66,12 @@ jobs:
           fi
 
       - name: Instance already exists
-        if: steps.check.outputs.count != '0'
+        if: steps.check.outputs.exists == 'true'
         run: |
-          echo "Instance 'n8n-arm-instance' already exists. Nothing to do."
+          echo "✅ La instancia 'n8n-arm-instance' ya existe. Nada que hacer."
 
       - name: Create SSH key file
-        if: steps.check.outputs.count == '0'
+        if: steps.check.outputs.exists == 'false'
         env:
           SSH_PUBLIC_KEY: ${{ secrets.INSTANCE_SSH_PUBLIC_KEY }}
         run: |
@@ -80,10 +80,12 @@ jobs:
 
       - name: Attempt to create instance
         id: create
-        if: steps.check.outputs.count == '0'
+        if: steps.check.outputs.exists == 'false'
+        continue-on-error: true
         run: |
           echo "Intentando crear la instancia ARM..."
-          oci compute instance launch \
+          set +e
+          OUTPUT=$(oci compute instance launch \
             --compartment-id "${{ secrets.OCI_COMPARTMENT_OCID }}" \
             --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}" \
             --shape "VM.Standard.A1.Flex" \
@@ -95,15 +97,48 @@ jobs:
             --ssh-authorized-keys-file "/tmp/authorized_keys" \
             --boot-volume-size-in-gbs 100 \
             --wait-for-state RUNNING \
-            --max-wait-seconds 600
+            --max-wait-seconds 600 2>&1)
+          EXIT_CODE=$?
 
-      - name: Creation failed
-        if: steps.create.outcome == 'failure'
+          echo "$OUTPUT"
+
+          # Errores esperados: no son fallos reales
+          if echo "$OUTPUT" | grep -q '"code": *"InternalError"' \
+             && echo "$OUTPUT" | grep -q "Out of host capacity"; then
+            echo "⏳ Sin capacidad ARM disponible. Reintentaremos en el próximo ciclo."
+            echo "resultado=sin_capacidad" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if echo "$OUTPUT" | grep -q '"code": *"TooManyRequests"'; then
+            echo "⏳ Rate limit de OCI. Reintentaremos en el próximo ciclo."
+            echo "resultado=rate_limit" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Cualquier otro error sí es un fallo real
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "❌ Error inesperado al crear la instancia."
+            echo "resultado=error_real" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          echo "✅ Instancia creada correctamente."
+          echo "resultado=creada" >> "$GITHUB_OUTPUT"
+
+      - name: Summary
+        if: always()
         run: |
-          echo "Instance creation failed."
-          echo "The next scheduled run will retry."
-          echo ""
-          echo "Errores comunes:"
-          echo "  Out of host capacity    → Comportamiento esperado."
-          echo "  NotAuthorizedOrNotFound → Revisa políticas IAM o los OCIDs."
-          echo "  InvalidParameter        → Revisa OCI_IMAGE_ID, OCI_SUBNET_ID o shape."
+          echo "### Resultado del intento" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.check.outputs.exists }}" == "true" ]; then
+            echo "✅ La instancia ya existía. Nada que hacer." >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ steps.create.outputs.resultado }}" == "creada" ]; then
+            echo "🎉 Instancia ARM creada correctamente." >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ steps.create.outputs.resultado }}" == "sin_capacidad" ]; then
+            echo "⏳ Sin capacidad ARM en OCI. Se reintentará en el próximo ciclo." >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ steps.create.outputs.resultado }}" == "rate_limit" ]; then
+            echo "⏳ Rate limit de OCI. Se reintentará en el próximo ciclo." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Error inesperado. Revisar el log." >> $GITHUB_STEP_SUMMARY
+          fi
